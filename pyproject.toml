@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fido2-emulator"
+version = "0.1.0"
+description = "Python CTAP2 authenticator with a loopback USB/IP transport for Windows"
+requires-python = ">=3.12"
+dependencies = ["cryptography==50.0.2", "fido2==2.2.1"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0", "ruff==0.17.3"]
+
+[project.scripts]
+fido2-emulator = "fido2_emulator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fido2_emulator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
