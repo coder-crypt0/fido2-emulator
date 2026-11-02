@@ -5,10 +5,13 @@ upstream signed usbip-win2 0.9.8.1 x64 driver.
 
 ## Results
 
-- Automated suite: **17 passed**, including the real TCP USB/IP transport,
+- Automated suite: **21 passed**, including the real TCP USB/IP transport,
   Yubico CTAPHID/CTAP2 interoperability, full relying-party verification,
   discoverable credentials, PIN exchange/change/lockout, cancellation, exclusion,
   RP isolation, USB descriptors/unlink, authenticated touch control, and DPAPI.
+- Explicit local reset: verified removal of all three stored credentials and the
+  PIN, with counter zero and device unplugged. Tests cover rejection when shutdown
+  is incomplete and the Windows runtime-file removal race.
 - Ruff lint and formatting checks: passed.
 - `pip check`: no broken requirements.
 - Windows Plug and Play enumerated `USB\VID_1209&PID_F1D0\VIRTUAL-0001` as a

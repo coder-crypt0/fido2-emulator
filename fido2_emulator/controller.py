@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from .service import data_directory, read_runtime
+from .storage import FileStore, MemoryStore
 
 
 def usbip_executable():
@@ -49,7 +50,7 @@ class Emulator:
     def status(self):
         try:
             return self.request("status")
-        except RuntimeError:
+        except (RuntimeError, OSError, ValueError):
             return {"running": False, "connected": False}
 
     def start(self):
@@ -139,3 +140,18 @@ class Emulator:
         if self.status()["running"]:
             self.unplug()
             self.request("stop")
+
+    def reset(self):
+        """Erase this emulator's credentials/PIN and leave it unplugged."""
+        self.stop()
+        for _ in range(100):
+            if not (data_directory() / "runtime.dpapi").exists() and not self.status()["running"]:
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError("Daemon did not stop; refusing to reset a live credential store.")
+        store = FileStore(data_directory() / "credentials.dpapi")
+        count = len(store.data["credentials"])
+        store.data = MemoryStore().data
+        store.save()
+        return {"reset": True, "credentials_removed": count, "pin_set": False, "connected": False}

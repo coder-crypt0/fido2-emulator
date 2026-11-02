@@ -72,6 +72,16 @@ The same operations are available from the terminal:
 .\.venv\Scripts\python.exe -m fido2_emulator stop
 ```
 
+To erase every emulator credential and its PIN, then leave the device unplugged:
+
+```powershell
+.\.venv\Scripts\python.exe -m fido2_emulator reset
+```
+
+Reset is destructive: existing website registrations can no longer authenticate
+using this key. It does not delete the corresponding registrations on websites.
+The reset replaces the local encrypted key store; it does not claim secure disk erasure.
+
 `serve` runs the daemon in the foreground for debugging. It supports `--usb-port`
 and `--control-port` (defaults 3240 and 3241). Both bind exclusively to loopback.
 `FIDO2_USBIP_EXE` overrides the client executable path.

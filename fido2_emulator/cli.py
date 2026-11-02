@@ -12,7 +12,7 @@ from .controller import Emulator, usbip_executable
 def main():
     parser = argparse.ArgumentParser(description="Python virtual USB FIDO2 development key")
     commands = parser.add_subparsers(dest="command")
-    for name in ("gui", "plug", "unplug", "touch", "status", "stop", "doctor", "demo"):
+    for name in ("gui", "plug", "unplug", "touch", "status", "stop", "reset", "doctor", "demo"):
         commands.add_parser(name)
     serve = commands.add_parser("serve")
     serve.add_argument("--usb-port", type=int, default=3240)
