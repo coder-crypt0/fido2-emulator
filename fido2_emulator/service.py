@@ -6,11 +6,12 @@ import json
 import logging
 import os
 import secrets
+from contextlib import nullcontext
 from pathlib import Path
 
 from .authenticator import Authenticator
 from .hid import TouchGate
-from .storage import FileStore, dpapi
+from .storage import FileStore, PortableStore, dpapi
 from .usbip import UsbIpServer
 
 
@@ -28,16 +29,44 @@ def read_runtime():
     return json.loads(dpapi(path.read_bytes(), decrypt=True))
 
 
-async def run(usb_port=3240, control_port=3241):
+async def run(usb_port=3240, control_port=3241, *, usb_drive=None, passphrase=None):
     directory = data_directory()
     directory.mkdir(parents=True, exist_ok=True)
+    with usb_drive.lock() if usb_drive else nullcontext():
+        store = (
+            PortableStore(usb_drive, passphrase)
+            if usb_drive
+            else FileStore(directory / "credentials.dpapi")
+        )
+        del passphrase
+        await serve(store, directory, usb_port, control_port, usb_drive)
+
+
+async def serve(store, directory, usb_port, control_port, usb_drive):
     gate = TouchGate()
-    store = FileStore(directory / "credentials.dpapi")
     authenticator = Authenticator(store, gate.request)
-    usb = UsbIpServer(authenticator, gate)
     stopped = asyncio.Event()
     token = secrets.token_hex(32)
     attached_port = None
+
+    def key_available():
+        if stopped.is_set():
+            return False
+        if usb_drive:
+            try:
+                store.check()
+            except OSError as error:
+                logging.info("Locking USB passkey vault: %s", error)
+                stopped.set()
+                usb.disconnect()
+                return False
+        return True
+
+    usb = UsbIpServer(authenticator, gate, available=key_available)
+
+    async def monitor_vault():
+        while key_available():
+            await asyncio.sleep(0.25)
 
     async def control(reader, writer):
         nonlocal attached_port
@@ -53,6 +82,8 @@ async def run(usb_port=3240, control_port=3241):
                 raise ValueError("Invalid control request")
             if not hmac.compare_digest(request["token"], token):
                 raise ValueError("Control authentication failed")
+            if not key_available():
+                return
             command = request.get("command")
             result = {}
             if command == "status":
@@ -64,6 +95,8 @@ async def run(usb_port=3240, control_port=3241):
                     "credentials": len(store.data["credentials"]),
                     "pin_set": store.data["pin_hash"] is not None,
                 }
+                if usb_drive:
+                    result["usb_drive"] = usb_drive.letter
             elif command == "touch":
                 result = {"accepted": gate.touch()}
             elif command == "set_port":
@@ -74,6 +107,8 @@ async def run(usb_port=3240, control_port=3241):
             elif command == "disconnect":
                 usb.disconnect()
                 attached_port = None
+                if usb_drive:
+                    stopped.set()
             elif command == "stop":
                 stopped.set()
             else:
@@ -101,9 +136,13 @@ async def run(usb_port=3240, control_port=3241):
             state = directory / "runtime.dpapi"
             state.write_bytes(dpapi(json.dumps(runtime).encode()))
             logging.info("USB/IP listening on 127.0.0.1:%s", usb_port)
+            monitor = asyncio.create_task(monitor_vault()) if usb_drive else None
             try:
                 await stopped.wait()
             finally:
+                if monitor:
+                    monitor.cancel()
+                    await asyncio.gather(monitor, return_exceptions=True)
                 usb.disconnect()
                 await asyncio.sleep(0)
                 state.unlink(missing_ok=True)

@@ -2,12 +2,12 @@
 
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from .controller import Emulator
 
 
-def run_gui():
+def run_gui(usb_drive=None):
     emulator = Emulator()
     root = tk.Tk()
     root.title("FIDO2 Development Key")
@@ -15,9 +15,8 @@ def run_gui():
     root.resizable(False, False)
     root.configure(padx=24, pady=20)
     ttk.Label(root, text="FIDO2 Development Key", font=("Segoe UI", 19, "bold")).pack(anchor="w")
-    ttk.Label(root, text="Python software authenticator · USB/IP", foreground="#555555").pack(
-        anchor="w", pady=(4, 18)
-    )
+    source = f"Encrypted vault on {usb_drive}" if usb_drive else "Windows user credential store"
+    ttk.Label(root, text=source, foreground="#555555").pack(anchor="w", pady=(4, 18))
     status_label = ttk.Label(root, text="Checking device…", font=("Segoe UI", 11))
     status_label.pack(anchor="w")
     pending_label = ttk.Label(root, text="", wraplength=430, font=("Segoe UI", 11))
@@ -44,24 +43,50 @@ def run_gui():
 
         threading.Thread(target=worker, daemon=True).start()
 
-    ttk.Button(buttons, text="Plug in", command=lambda: action(emulator.plug)).pack(side="left")
-    ttk.Button(buttons, text="Unplug", command=lambda: action(emulator.unplug)).pack(
-        side="left", padx=8
-    )
+    def plug_key():
+        if busy:
+            return
+        if not usb_drive or emulator.status()["running"]:
+            action(lambda: emulator.plug(usb_drive))
+            return
+        passphrase = simpledialog.askstring(
+            "Unlock USB passkey vault", f"Passphrase for {usb_drive}", show="*", parent=root
+        )
+        if passphrase is not None:
+            action(lambda: emulator.plug(usb_drive, lambda: passphrase))
+
+    plug = ttk.Button(buttons, text="Plug in", command=plug_key)
+    plug.pack(side="left")
+    unplug = ttk.Button(buttons, text="Unplug")
+    unplug.pack(side="left", padx=8)
     touch = ttk.Button(buttons, text="Touch key", command=lambda: action(emulator.touch))
     touch.pack(side="left")
     ttk.Label(
         root,
-        text="Approve only requests you initiated.\nClosing this panel leaves the key running.",
+        text=(
+            "Unplug the virtual key or remove the drive to lock its vault."
+            if usb_drive
+            else "Approve only requests you initiated.\nClosing this panel leaves the key running."
+        ),
         foreground="#555555",
     ).pack(anchor="w", pady=(22, 0))
 
     def poll():
         state = emulator.status()
-        status_label.config(
-            text="Connected as USB security key" if state["connected"] else "Unplugged"
+        other_key = state["running"] and state.get("usb_drive") != usb_drive
+        label = "Connected as USB security key" if state["connected"] else "Unplugged"
+        if other_key:
+            label = "A different key is running"
+        elif usb_drive and not state["running"]:
+            label = "USB vault locked"
+        status_label.config(text=label)
+        plug.config(state="disabled" if other_key or busy else "normal")
+        unplug.config(
+            text="Stop running key" if other_key else "Unplug",
+            command=lambda: action(emulator.stop if other_key else emulator.unplug),
+            state="normal" if state["running"] and not busy else "disabled",
         )
-        pending = state.get("pending")
+        pending = None if other_key else state.get("pending")
         pending_label.config(
             text=(
                 f"{pending['operation']}: {pending['rp']}"

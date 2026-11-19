@@ -1,16 +1,14 @@
 # Python FIDO2 USB emulator
 
 A software CTAP2 authenticator that presents a virtual USB HID security key to
-Windows through a signed USB/IP virtual host controller. Python handles USB
-enumeration, CTAPHID, credential creation, signing, PIN operations, presence
-approval, and plug/unplug control.
+Windows through a signed USB/IP virtual host controller. It can store passkeys in
+a Windows user-scoped DPAPI store or a passphrase-encrypted vault on a standard USB
+flash drive. Python handles signing and touch approval on the Windows host.
 
-This is a development authenticator. Its keys live in software, encrypted at rest
-with user-scoped Windows DPAPI. It cannot provide physical isolation, certified
-hardware attestation, or emulate a device plugged into another computer through
-an ordinary USB cable. Services requiring approved hardware attestation may reject
-it. Use it for your own project's integration and testing; keep independent recovery
-methods for real accounts.
+A storage-only flash drive exposes USB mass storage. The emulator and driver supply
+the FIDO interface on each Windows PC you use. The host handles decrypted keys while
+the vault is open, and the vault file can be copied. Sites that require approved
+hardware attestation may reject this software authenticator.
 
 ## Quick start (Windows 10/11, Python 3.12+)
 
@@ -47,6 +45,38 @@ Launch the panel by double-clicking `launch.cmd`, or:
 Touch approval expires after 30 seconds and cannot be banked in advance. Closing
 the panel leaves the daemon/key running; use `stop` to shut it down.
 
+## Use a USB flash drive
+
+Install the application and signed driver as above on each Windows PC. Insert a
+writable USB drive and use its assigned drive letter. Initialize the vault once,
+using a strong passphrase, then open the USB-mode panel. For a drive mounted as
+`E:`, run these commands from the project folder.
+
+```powershell
+.\.venv\Scripts\python.exe -m fido2_emulator init-usb E:
+.\launch.cmd --usb-drive E:
+```
+
+Choose **Plug in** and enter your vault passphrase. In your browser, select
+**Security key**, then choose **Touch key** in the panel to approve the displayed
+request. Windows may also prompt for a separate FIDO PIN.
+
+**Unplug** in the panel locks the vault and detaches the virtual key. Removing
+the physical drive also locks the session and disconnects the virtual key.
+When moving the drive to another configured PC, launch with that PC's drive
+letter and enter the same vault passphrase. The local DPAPI store and the portable
+vault have independent registrations. If another emulator key is running, use
+**Stop running key** in the panel before switching stores.
+
+The drive needs only the `Fido2Emulator.vault` file. Initialization preserves the
+drive's other files and refuses to replace an existing vault. Back up the vault
+after adding or changing credentials, and keep a separate recovery method for your
+accounts. The stored keys require the passphrase to recover. Lock the vault before
+ejecting the drive to avoid interrupting a write.
+
+For command-line use, run `python -m fido2_emulator plug --usb-drive E:` and use the
+same `touch`, `status`, and `unplug` commands as for local mode.
+
 ## Python control API
 
 ```python
@@ -72,7 +102,7 @@ The same operations are available from the terminal:
 .\.venv\Scripts\python.exe -m fido2_emulator stop
 ```
 
-To erase every emulator credential and its PIN, then leave the device unplugged:
+To erase credentials and the PIN from the local Windows store, run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m fido2_emulator reset
@@ -80,7 +110,7 @@ To erase every emulator credential and its PIN, then leave the device unplugged:
 
 Reset is destructive: existing website registrations can no longer authenticate
 using this key. It does not delete the corresponding registrations on websites.
-The reset replaces the local encrypted key store; it does not claim secure disk erasure.
+The reset replaces the local encrypted store without securely erasing its disk blocks.
 
 `serve` runs the daemon in the foreground for debugging. It supports `--usb-port`
 and `--control-port` (defaults 3240 and 3241). Both bind exclusively to loopback.
@@ -123,7 +153,7 @@ identifiers, not a production allocation.
 
 ## Storage and process boundaries
 
-Runtime data is outside the repository at `%LOCALAPPDATA%\Fido2Emulator`:
+Local runtime data defaults to `%LOCALAPPDATA%\Fido2Emulator`:
 
 - `credentials.dpapi`: encrypted keys, credential metadata, counter, and PIN state.
 - `runtime.dpapi`: encrypted per-run local control token and connection details.
@@ -136,6 +166,11 @@ can decrypt DPAPI data and control this authenticator; it is not a hardware trus
 boundary. USB/IP on loopback is not authenticated: local software can issue CTAP
 requests, as local software can access a physical authenticator. Touch remains an
 explicit operation. Keep the daemon unplugged/stopped when unused.
+
+USB mode puts credential data, the signature counter, and FIDO PIN state in
+`Fido2Emulator.vault` on the selected volume. It uses Argon2id for passphrase
+derivation and AES-256-GCM for authenticated encryption. The control file and
+lifecycle log stay in the local runtime directory.
 
 ## Tests
 

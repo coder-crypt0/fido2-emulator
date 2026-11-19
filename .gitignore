@@ -16,3 +16,5 @@ MOONLIGHT.md
 .agent/MOONLIGHT.md
 *.log
 *.dpapi
+*.vault
+.fido2-vault-*.tmp

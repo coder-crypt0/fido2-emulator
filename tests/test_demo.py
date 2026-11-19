@@ -29,7 +29,10 @@ def test_browser_demo_actual_http_registration_login_origin_and_replay(rig):
             body = json.loads(response.read())
             return response.status, body
 
-        assert post("/register/begin", {})[0] == 403
+        client.request("POST", "/register/begin", headers=headers)
+        rejected = client.getresponse()
+        assert rejected.status == 403
+        rejected.read()
         headers["Origin"] = "http://localhost:8765"
         status, creation = post("/register/begin", {})
         assert status == 200

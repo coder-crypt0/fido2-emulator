@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 from .service import data_directory, read_runtime
-from .storage import FileStore, MemoryStore
+from .storage import FileStore, MemoryStore, encode_passphrase
+from .usb_drive import drive_letter
 
 
 def usbip_executable():
@@ -30,8 +31,8 @@ def usbip_executable():
 
 class Emulator:
     def request(self, command, **kwargs):
-        runtime = read_runtime()
         try:
+            runtime = read_runtime()
             with socket.create_connection(
                 ("127.0.0.1", runtime["control_port"]), timeout=3
             ) as sock:
@@ -53,34 +54,96 @@ class Emulator:
         except (RuntimeError, OSError, ValueError):
             return {"running": False, "connected": False}
 
-    def start(self):
-        if self.status()["running"]:
-            return
+    def start(self, usb_drive=None, unlock=None):
+        if usb_drive:
+            usb_drive = drive_letter(usb_drive)
+        status = self.status()
+        if status["running"]:
+            if status.get("usb_drive") != usb_drive:
+                raise RuntimeError("Stop the running key before switching credential stores.")
+            return True
         if os.name != "nt":
             raise RuntimeError("The packaged daemon uses Windows DPAPI and requires Windows.")
+        command = [sys.executable, "-m", "fido2_emulator", "serve"]
+        if usb_drive:
+            if unlock is None:
+                raise ValueError("USB drive mode requires a vault passphrase.")
+            passphrase = unlock()
+            if passphrase is None:
+                return False
+            encode_passphrase(passphrase)
+            secret = json.dumps(passphrase).encode("ascii") + b"\n"
+            del passphrase
+            command.extend(["--usb-drive", usb_drive])
         directory = data_directory()
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / "daemon.log").open("ab") as log:
             process = subprocess.Popen(
-                [sys.executable, "-m", "fido2_emulator", "serve"],
-                stdin=subprocess.DEVNULL,
+                command,
+                stdin=subprocess.PIPE if usb_drive else subprocess.DEVNULL,
                 stdout=log,
-                stderr=log,
+                stderr=subprocess.PIPE if usb_drive else log,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-        for _ in range(100):
-            if self.status()["running"]:
-                return
-            if process.poll() is not None:
-                break
-            time.sleep(0.1)
+        try:
+            if process.stdin:
+                try:
+                    with process.stdin:
+                        process.stdin.write(secret)
+                except BrokenPipeError:
+                    pass
+                del secret
+            for _ in range(100):
+                if process.poll() is not None:
+                    if process.stderr:
+                        message = process.stderr.read().decode(errors="replace").strip()
+                        if message:
+                            raise RuntimeError(message.removeprefix("Error: "))
+                    break
+                status = self.status()
+                if status["running"]:
+                    if status.get("usb_drive") != usb_drive:
+                        raise RuntimeError(
+                            "Stop the running key before switching credential stores."
+                        )
+                    return True
+                time.sleep(0.1)
+            if process.poll() is None:
+                process.terminate()
+                process.wait(5)
+        finally:
+            if process.stderr:
+                process.stderr.close()
         raise RuntimeError(f"Daemon did not start. Inspect {directory / 'daemon.log'}")
 
-    def plug(self):
+    def plug(self, usb_drive=None, unlock=None):
         executable = usbip_executable()
-        self.start()
-        if self.status()["connected"]:
+        if usb_drive:
+            usb_drive = drive_letter(usb_drive)
+        if not self.start(usb_drive, unlock):
             return self.status()
+        status = self.status()
+        if not status["running"]:
+            raise RuntimeError("The key stopped before it could be attached.")
+        if status.get("usb_drive") != usb_drive:
+            raise RuntimeError("Stop the running key before switching credential stores.")
+        if status["connected"]:
+            return status
+        try:
+            return self._attach(executable)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            if usb_drive and self.status().get("usb_drive") == usb_drive:
+                try:
+                    self.request("disconnect")
+                except RuntimeError:
+                    pass
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise RuntimeError(
+                    "The virtual USB driver timed out while attaching the key."
+                ) from error
+            raise
+
+    def _attach(self, executable):
         runtime = read_runtime()
         result = subprocess.run(
             [
@@ -119,6 +182,10 @@ class Emulator:
         status = self.status()
         if not status["running"]:
             return status
+        if status.get("usb_drive"):
+            # Lock the vault even if the driver has already dropped the connection.
+            self.request("disconnect")
+            return {"running": False, "connected": False}
         # Closing the import connection simulates physical removal. No global detach.
         if status["connected"] and status.get("port") is not None:
             result = subprocess.run(
@@ -137,12 +204,13 @@ class Emulator:
         return self.request("touch")["accepted"]
 
     def stop(self):
-        if self.status()["running"]:
-            self.unplug()
+        if self.unplug()["running"]:
             self.request("stop")
 
     def reset(self):
-        """Erase this emulator's credentials/PIN and leave it unplugged."""
+        """Erase the local Windows credentials and PIN."""
+        if self.status().get("usb_drive"):
+            raise RuntimeError("Unplug the USB key before resetting the local Windows store.")
         self.stop()
         for _ in range(100):
             if not (data_directory() / "runtime.dpapi").exists() and not self.status()["running"]:

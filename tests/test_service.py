@@ -1,3 +1,4 @@
+import asyncio
 import concurrent.futures
 import json
 import os
@@ -5,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import closing, nullcontext
 
 import pytest
 from fido2.ctap2 import Ctap2
@@ -13,8 +15,8 @@ from fido2.hid.base import HidDescriptor
 from usbip_client import HostConnection
 
 from fido2_emulator.controller import Emulator
-from fido2_emulator.service import read_runtime
-from fido2_emulator.storage import FileStore
+from fido2_emulator.service import read_runtime, run
+from fido2_emulator.storage import VAULT_NAME, FileStore, PortableStore
 from fido2_emulator.usbip import PID, VID
 
 
@@ -95,3 +97,95 @@ def test_real_daemon_requires_authenticated_touch_and_persists_keys(tmp_path, mo
         if process.poll() is None:
             process.terminate()
             process.wait(5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Daemon requires Windows DPAPI")
+def test_usb_vault_reopens_and_locks_on_removal(tmp_path, monkeypatch):
+    class Drive:
+        letter = "E:"
+        present = True
+        root = tmp_path / "usb"
+
+        def check(self):
+            if not self.present:
+                raise OSError("Drive removed")
+
+        def lock(self):
+            return nullcontext()
+
+    host = tmp_path / "host"
+    monkeypatch.setenv("FIDO2_EMULATOR_HOME", str(host))
+    drive = Drive()
+    drive.root.mkdir()
+    passphrase = "vault test passphrase"
+    PortableStore.initialize(drive, passphrase)
+    emulator = Emulator()
+
+    def wait_for_touch():
+        for _ in range(150):
+            if emulator.status().get("pending"):
+                return
+            time.sleep(0.01)
+        pytest.fail("No touch was requested")
+
+    def use_key(port, registered=None):
+        with closing(HostConnection(port)) as connection:
+            ctap = Ctap2(
+                CtapHidDevice(HidDescriptor("usb-test", VID, PID, 64, 64, None, None), connection)
+            )
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                if registered is None:
+                    future = pool.submit(
+                        ctap.make_credential,
+                        bytes(32),
+                        {"id": "example.test", "name": "Test"},
+                        {"id": b"portable-test-user", "name": "portable-test-user"},
+                        [{"type": "public-key", "alg": -7}],
+                    )
+                    wait_for_touch()
+                    assert emulator.touch()
+                    return future.result(3).auth_data.credential_data
+
+                digest = os.urandom(32)
+                allowed = [{"id": registered.credential_id, "type": "public-key"}]
+                future = pool.submit(ctap.get_assertion, "example.test", digest, allowed)
+                wait_for_touch()
+                assert emulator.touch()
+                assertion = future.result(3)
+                registered.public_key.verify(assertion.auth_data + digest, assertion.signature)
+
+                pending = pool.submit(ctap.get_assertion, "example.test", digest, allowed)
+                wait_for_touch()
+                drive.present = False
+                with pytest.raises((EOFError, ConnectionError)):
+                    pending.result(3)
+
+    async def run_session(registered=None):
+        usb_port, control_port = free_ports()
+        task = asyncio.create_task(
+            run(usb_port, control_port, usb_drive=drive, passphrase=passphrase)
+        )
+        try:
+            async with asyncio.timeout(5):
+                while not (host / "runtime.dpapi").exists():
+                    if task.done():
+                        await task
+                    await asyncio.sleep(0.01)
+            assert (await asyncio.to_thread(emulator.status))["usb_drive"] == "E:"
+            return await asyncio.to_thread(use_key, usb_port, registered)
+        finally:
+            if drive.present and not task.done():
+                await asyncio.to_thread(emulator.unplug)
+            await asyncio.wait_for(task, 3)
+
+    async def exercise():
+        credential = await run_session()
+        assert not (host / "runtime.dpapi").exists()
+        await run_session(credential)
+
+    asyncio.run(exercise())
+    assert not (host / "runtime.dpapi").exists()
+    assert not (host / "credentials.dpapi").exists()
+    assert b"portable-test-user" not in (drive.root / VAULT_NAME).read_bytes()
+    drive.present = True
+    assert PortableStore(drive, passphrase).data["counter"] == 1

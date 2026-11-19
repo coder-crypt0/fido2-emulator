@@ -57,3 +57,12 @@ def test_reset_refuses_stale_runtime_file_even_when_status_is_unavailable(tmp_pa
     with pytest.raises(RuntimeError, match="refusing to reset a live credential store"):
         emulator.reset()
     assert path.read_bytes() == b"preserve-existing-store"
+
+
+def test_reset_requires_a_portable_key_to_be_unplugged(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIDO2_EMULATOR_HOME", str(tmp_path))
+    emulator = Emulator()
+    monkeypatch.setattr(emulator, "status", lambda: {"running": True, "usb_drive": "E:"})
+    with pytest.raises(RuntimeError, match="Unplug the USB key"):
+        emulator.reset()
+    assert not (tmp_path / "credentials.dpapi").exists()

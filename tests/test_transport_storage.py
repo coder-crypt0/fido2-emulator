@@ -8,7 +8,8 @@ from fido2.hid.base import parse_report_descriptor
 
 from fido2_emulator.authenticator import Authenticator
 from fido2_emulator.hid import HidDevice, TouchGate, packets
-from fido2_emulator.storage import FileStore, MemoryStore
+from fido2_emulator.storage import VAULT_NAME, FileStore, MemoryStore, PortableStore
+from fido2_emulator.usb_drive import UsbDrive
 from fido2_emulator.usbip import CONFIG_DESCRIPTOR, DEVICE_DESCRIPTOR, REPORT_DESCRIPTOR
 
 
@@ -96,3 +97,32 @@ def test_dpapi_persistence_and_tamper_rejection(tmp_path):
     path.write_bytes(raw)
     with pytest.raises(OSError):
         FileStore(path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows volume GUID paths and mutex")
+def test_passphrase_vault_uses_volume_path_without_overwriting(tmp_path, monkeypatch):
+    monkeypatch.setattr(UsbDrive, "bus_type", lambda self: 7)
+    drive = UsbDrive(tmp_path.drive)
+    # Keep all test files in pytest's temporary directory, using its real volume GUID.
+    drive.root /= tmp_path.relative_to(tmp_path.anchor)
+    assert drive.root.is_dir()
+    passphrase = "an example vault passphrase 🔑"
+    PortableStore.initialize(drive, passphrase)
+    with pytest.raises(FileExistsError):
+        PortableStore.initialize(drive, passphrase)
+    with drive.lock(), pytest.raises(RuntimeError, match="already in use"):
+        with drive.lock():
+            pytest.fail("Two writers acquired the same volume lock")
+    with pytest.raises(ValueError, match="Incorrect vault passphrase"):
+        PortableStore(drive, "wrong passphrase")
+
+    store = PortableStore(drive, passphrase)
+    store.data["counter"] = 12
+    store.save()
+    assert PortableStore(drive, passphrase).data["counter"] == 12
+    path = tmp_path / VAULT_NAME
+    raw = bytearray(path.read_bytes())
+    raw[-1] ^= 1
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="damaged passkey vault"):
+        PortableStore(drive, passphrase)

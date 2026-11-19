@@ -5,4 +5,4 @@ if not exist ".venv\Scripts\pythonw.exe" (
     pause
     exit /b 1
 )
-start "" ".venv\Scripts\pythonw.exe" -m fido2_emulator gui
+start "" ".venv\Scripts\pythonw.exe" -m fido2_emulator gui %*

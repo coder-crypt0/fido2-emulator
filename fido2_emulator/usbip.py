@@ -92,12 +92,13 @@ def control(setup, payload):
 
 
 class Connection:
-    def __init__(self, reader, writer, authenticator, gate):
+    def __init__(self, reader, writer, authenticator, gate, available):
         self.reader, self.writer = reader, writer
         self.reports = deque()
         self.reads = deque()
         self.hid = HidDevice(authenticator, self.emit)
         self.gate = gate
+        self.available = available
         self.hid.touch_pending = lambda: self.gate.pending is not None
 
     def reply(self, seq, status=0, data=b"", actual=None):
@@ -127,6 +128,8 @@ class Connection:
         self.flush()
 
     def flush(self):
+        if self.reads and self.reports and not self.available():
+            return
         while self.reads and self.reports:
             seq, size = self.reads.popleft()
             self.reply(seq, data=self.reports.popleft()[:size])
@@ -185,11 +188,11 @@ class Connection:
 
 
 class UsbIpServer:
-    def __init__(self, authenticator, gate):
+    def __init__(self, authenticator, gate, available=lambda: True):
         self.authenticator = authenticator
         self.gate = gate
+        self.available = available
         self.connection = None
-        self.stopping = False
 
     async def accept(self, reader, writer):
         imported = False
@@ -199,19 +202,25 @@ class UsbIpServer:
             if version != VERSION or status != 0:
                 return
             if command == 0x8005:
-                available = self.connection is None
+                available = self.connection is None and self.available()
                 writer.write(struct.pack(">HHII", VERSION, 5, 0, int(available)))
                 if available:
                     writer.write(device_record() + bytes([3, 0, 0, 0]))
                 await writer.drain()
             elif command == 0x8003:
                 bus = await asyncio.wait_for(reader.readexactly(32), timeout=5)
-                if bus.rstrip(b"\0") != BUS_ID.encode() or self.connection is not None:
+                if (
+                    bus.rstrip(b"\0") != BUS_ID.encode()
+                    or self.connection is not None
+                    or not self.available()
+                ):
                     writer.write(struct.pack(">HHI", VERSION, 3, 1))
                     await writer.drain()
                     return
                 self.authenticator.power_on()
-                self.connection = Connection(reader, writer, self.authenticator, self.gate)
+                self.connection = Connection(
+                    reader, writer, self.authenticator, self.gate, self.available
+                )
                 imported = True
                 writer.write(struct.pack(">HHI", VERSION, 3, 0) + device_record())
                 await writer.drain()
