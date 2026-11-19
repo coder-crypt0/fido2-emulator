@@ -1,5 +1,19 @@
 # Verification record
 
+## USB flash-drive mode
+
+Verified on 2026-11-19 with an ordinary USB mass-storage drive connected to
+Windows 11. The test used a temporary encrypted vault on the physical volume.
+Yubico's CTAP2 client registered a credential, then verified a sign-in signature
+after the daemon restarted and reopened the vault. Windows Plug and Play
+enumerated the virtual FIDO HID device through the installed signed driver and
+removed it after the vault was locked. The temporary vault was cleaned up.
+
+The automated suite also disconnects a pending assertion during simulated
+drive removal. The native browser sign-in dialog was outside this verification.
+
+## Local Windows store
+
 Verified on 2026-11-02 using Windows 11 (build 26200), Python 3.12.6, and the
 upstream signed usbip-win2 0.9.8.1 x64 driver.
 
