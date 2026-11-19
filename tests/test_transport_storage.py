@@ -106,7 +106,10 @@ def test_passphrase_vault_uses_volume_path_without_overwriting(tmp_path, monkeyp
     # Keep all test files in pytest's temporary directory, using its real volume GUID.
     drive.root /= tmp_path.relative_to(tmp_path.anchor)
     assert drive.root.is_dir()
-    passphrase = "an example vault passphrase 🔑"
+    with pytest.raises(ValueError, match="at least 4 characters"):
+        PortableStore.initialize(drive, "a🔑!")
+    assert not (drive.root / VAULT_NAME).exists()
+    passphrase = "a🔑!b"
     PortableStore.initialize(drive, passphrase)
     with pytest.raises(FileExistsError):
         PortableStore.initialize(drive, passphrase)

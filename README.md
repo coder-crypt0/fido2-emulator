@@ -48,9 +48,10 @@ the panel leaves the daemon/key running; use `stop` to shut it down.
 ## Use a USB flash drive
 
 Install the application and signed driver as above on each Windows PC. Insert a
-writable USB drive and use its assigned drive letter. Initialize the vault once,
-using a strong passphrase, then open the USB-mode panel. For a drive mounted as
-`E:`, run these commands from the project folder.
+writable USB drive and use its assigned drive letter. Initialize the vault once
+with a passphrase of at least four characters, then open the USB-mode panel.
+A longer passphrase better protects a copied vault from offline guessing.
+For a drive mounted as `E:`, run these commands from the project folder.
 
 ```powershell
 .\.venv\Scripts\python.exe -m fido2_emulator init-usb E:

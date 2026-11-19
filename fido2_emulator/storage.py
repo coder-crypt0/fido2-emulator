@@ -123,8 +123,8 @@ class PortableStore(MemoryStore):
             drive.check()
             if os.path.lexists(path):
                 raise FileExistsError(f"A passkey vault already exists on {drive.letter}.")
-            if len(passphrase) < 12:
-                raise ValueError("Use a vault passphrase of at least 12 characters.")
+            if len(passphrase) < 4:
+                raise ValueError("Use a vault passphrase of at least 4 characters.")
             salt = secrets.token_bytes(16)
             header = VAULT_HEADER + salt
             cipher = vault_cipher(passphrase, salt)
